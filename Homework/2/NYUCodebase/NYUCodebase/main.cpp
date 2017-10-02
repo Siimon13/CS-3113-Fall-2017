@@ -36,6 +36,22 @@ int main(int argc, char *argv[])
 	Matrix ballViewMatrix;
 
 	float prevTicks = 0.0f;
+	float xDelta = -0.5f;
+	float yDelta = 0.5f;
+	
+	//Game Loc trackers
+
+	//Ball trackers
+	float ballxpos = 0.0f;
+	float ballypos = 0.0f;
+	float ballacc = 1.0f;
+
+	//PaddleTrackers
+	float rightPaddleTop = 0.5f;
+	float rightPaddleBottom = -0.5f;
+
+	float leftPaddleTop = 0.5f;
+	float leftPaddleBottom = -0.5f;
 
 	SDL_Event event;
 	bool done = false;
@@ -49,20 +65,26 @@ int main(int argc, char *argv[])
 
 				//Left Paddle
 				if (event.key.keysym.scancode == SDL_SCANCODE_W) {
-
-					OutputDebugString("W pressed");
 					leftPaddleViewMatrix.Translate(0.0f, 0.05f, 0.0f);
+					leftPaddleTop += 0.05f;
+					leftPaddleBottom += 0.05f;
 				}
 				else if (event.key.keysym.scancode == SDL_SCANCODE_S) {
 					leftPaddleViewMatrix.Translate(0.0f, -0.05f, 0.0f);
+					leftPaddleTop -= 0.05f;
+					leftPaddleBottom -= 0.05f;
 				}
 
 				//Right Paddle
 				if (event.key.keysym.scancode == SDL_SCANCODE_UP) {
 					rightPaddleViewMatrix.Translate(0.0f, 0.05f, 0.0f);
+					rightPaddleTop += 0.05f;
+					rightPaddleBottom += 0.05f;
 				}
 				else if (event.key.keysym.scancode == SDL_SCANCODE_DOWN) {
 					rightPaddleViewMatrix.Translate(0.0f, -0.05f, 0.0f);
+					rightPaddleTop -= 0.05f;
+					rightPaddleBottom -= 0.05f;
 
 				}
 			}
@@ -104,8 +126,37 @@ int main(int argc, char *argv[])
 
 		SDL_GL_SwapWindow(displayWindow);
 
-		ballViewMatrix.Translate(0.1f*elapsed, -0.2f*elapsed, 0.0f);
+		ballypos += yDelta*elapsed*ballacc;
+		ballxpos += xDelta*elapsed*ballacc;
 
+		if (ballypos + 0.25f >= 4.0f || ballypos - 0.25f <= -4.0f)
+			yDelta *= -1;
+
+		// Collision with Paddles
+		if ((ballxpos + 0.25f >= 4.95f || ballxpos - 0.25f <= -4.95f )&& (rightPaddleBottom <= ballypos <= rightPaddleTop || leftPaddleBottom <= ballypos <= leftPaddleTop))
+			xDelta *= -1;
+
+
+		if (ballxpos + 0.25f >= 5.2f) {
+			OutputDebugString("Left Paddle Wins!!");
+			ballViewMatrix.Translate(-1*ballxpos, -1*ballypos, 0);
+			ballxpos = 0;
+			ballypos = 0;
+			xDelta *= -1;
+			ballacc = 1.0f;
+		}
+		else if (ballxpos - 0.25f <= -5.2f){
+			OutputDebugString("Right Paddle Wins!!");
+			ballViewMatrix.Translate(-1 * ballxpos, -1 * ballypos, 0);
+			ballxpos = 0;
+			ballypos = 0;
+			xDelta *= -1;
+			ballacc = 1.0f;
+		}	
+		else {
+			ballViewMatrix.Translate(xDelta*elapsed*ballacc, yDelta*elapsed*ballacc, 0.0f);
+		}
+		ballacc *= 1.0001f;
 	}
 
 	SDL_Quit();
