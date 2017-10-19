@@ -238,7 +238,7 @@ void UpdateGameLevel(float elapsed) {
 		state.bullets[i].viewMatrix.SetPosition(state.bullet.position.x, state.bullet.position.y, 0);
 	}
 
-	state.bullet.position.y += 0.8f * elapsed;
+	state.bullet.position.y += 1.5f * elapsed;
 	state.bullet.viewMatrix.SetPosition(state.bullet.position.x, state.bullet.position.y, 0);
 
 	if (state.enemy.position.x + state.enemy.velocity * elapsed > 3.3 || 
@@ -293,17 +293,19 @@ void ProcessGameLevelInput(SDL_Event event, float elapsed, bool summonBullet) {
 		state.bullet = bullet;
 	}
 
-	if (keys[SDL_SCANCODE_RIGHT]) {
+	float velocity = state.player.velocity;
+
+	if (keys[SDL_SCANCODE_RIGHT] && state.player.position.x + velocity * elapsed < 3.2f) {
 		OutputDebugString("Move Left???");
 
-		state.player.position.x += 15.5f * elapsed;
-		playerviewMatrix.Translate(15.5f * elapsed, 0, 0);
+		state.player.position.x += velocity * elapsed;
+		playerviewMatrix.Translate(velocity * elapsed, 0, 0);
 	}
-	else if (keys[SDL_SCANCODE_LEFT]) {
+	else if (keys[SDL_SCANCODE_LEFT] && state.player.position.x + velocity * elapsed > -3.2f) {
 		OutputDebugString("Move Right???");
-
-		state.player.position.x -= 15.5f * elapsed;
-		playerviewMatrix.Translate(-15.5f * elapsed, 0, 0);
+		velocity *= -1;
+		state.player.position.x +=  velocity * elapsed;
+		playerviewMatrix.Translate(velocity * elapsed, 0, 0);
 	}
 
 
@@ -350,6 +352,7 @@ int main(int argc, char *argv[])
 	Entity player;
 	player.sprite = shipSprite;
 	player.position = Vector3(0, 0, 0);
+	player.velocity = 20.5f;
 
 	state.player = player;
 	
