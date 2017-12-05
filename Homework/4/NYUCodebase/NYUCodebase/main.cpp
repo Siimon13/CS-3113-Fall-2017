@@ -10,6 +10,7 @@
 #include "ShaderProgram.h"
 #include <vector>
 #include <windows.h>
+#include <SDL_mixer.h>
 
 #ifdef _WINDOWS
 #define RESOURCE_FOLDER ""
@@ -20,6 +21,7 @@
 #define FIXED_TIMESTEP 0.0166666f
 
 SDL_Window* displayWindow;
+
 
 // Loads Texture
 GLuint LoadTexture(const char *filePath) {
@@ -183,6 +185,8 @@ SheetSprite enemySprite;
 GLuint spriteSheetTexture;
 GLuint textTexture;
 
+Mix_Chunk* collideSound;
+
 //Render Function
 void Render(ShaderProgram* program) {
 
@@ -243,6 +247,7 @@ void UpdateGameLevel(float elapsed) {
 
 	if (state.enemy.position.x + state.enemy.velocity * elapsed > 3.3 || 
 		state.enemy.position.x + state.enemy.velocity * elapsed < -3.3) {
+		Mix_PlayChannel(-1, collideSound, 0);
 		state.enemy.velocity *= -1;
 	}
 
@@ -324,6 +329,7 @@ void ProcessInput(SDL_Event event, float elapsed, bool summonBullet) {
 	}
 }
 
+
 int main(int argc, char *argv[])
 {
 	SDL_Init(SDL_INIT_VIDEO);
@@ -342,6 +348,20 @@ int main(int argc, char *argv[])
 
 	Matrix projectionMatrix;
 	projectionMatrix.SetOrthoProjection(-3.55f, 3.55f, -2.0f, 2.0f, -1.0f, 1.0f);
+
+	//Set up Music
+	Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 4096);
+
+	Mix_Music *themeMusic;
+	themeMusic = Mix_LoadMUS("track.mp3");
+	Mix_PlayMusic(themeMusic, -1);
+
+	//init laser sound
+	Mix_Chunk* shootSound;
+	shootSound= Mix_LoadWAV("beam.wav");
+
+	//init beep sound
+	collideSound = Mix_LoadWAV("beep.wav");
 
 	//======================Creating Entities
 	
@@ -388,6 +408,7 @@ int main(int argc, char *argv[])
 			else if (event.type == SDL_KEYDOWN) {
 
 				if (event.key.keysym.scancode == SDL_SCANCODE_SPACE) {
+					Mix_PlayChannel(-1, shootSound, 0);
 					summonBullet = true;
 				}
 			}
@@ -409,6 +430,11 @@ int main(int argc, char *argv[])
 
 		SDL_GL_SwapWindow(displayWindow);
 	}
+
+	//Clean up music
+	Mix_FreeMusic(themeMusic);
+	Mix_FreeChunk(shootSound);
+	Mix_FreeChunk(collideSound);
 
 	SDL_Quit();
 	return 0;
