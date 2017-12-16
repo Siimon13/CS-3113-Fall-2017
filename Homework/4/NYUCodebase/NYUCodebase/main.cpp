@@ -1,56 +1,69 @@
+#include <algorithm>
+#include <chrono>
+#include <forward_list>
+#include <fstream>
+#include <iostream>
+#include <list>
+#include <thread>
+#include <vector>
 #ifdef _WINDOWS
-#include <GL/glew.h>
+	#include <GL/glew.h>
 #endif
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include <SDL_image.h>
+#include <SDL_mixer.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
-#include <iostream>
+#include "Settings.h"
+#include "Matrix.h"
+#include "Player.h"
 #include "ShaderProgram.h"
-#include <vector>
-#include <windows.h>
-#include <SDL_mixer.h>
-
+#include "Tile.h"
+#include "TileFile.h"
 #ifdef _WINDOWS
-#define RESOURCE_FOLDER ""
+	#define RESOURCE_FOLDER ""
 #else
-#define RESOURCE_FOLDER "NYUCodebase.app/Contents/Resources/"
+	#define RESOURCE_FOLDER "NYUCodebase.app/Contents/Resources/"
 #endif
+using namespace std;
 
-#define FIXED_TIMESTEP 0.0166666f
+string TILE_FILE = "demo.txt";
 
+const Matrix IDENTITY;
 SDL_Window* displayWindow;
+ShaderProgram* program;
 
-
-// Loads Texture
-GLuint LoadTexture(const char *filePath) {
-	int w, h, comp;
-	unsigned char* image = stbi_load(filePath, &w, &h, &comp, STBI_rgb_alpha);
-	if (image == NULL) {
-		std::cout << "Unable to load image. Make sure the path is correct\n";
-		assert(false);
-	}
-	GLuint retTexture;
-	glGenTextures(1, &retTexture);
-	glBindTexture(GL_TEXTURE_2D, retTexture);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, image);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	stbi_image_free(image);
-	return retTexture;
-}
-
-//Vector Class
+//Classes
+enum GameState { MAIN_MENU, MAP_SELECT, GAME_LEVEL, GAME_OVER };
+	
 class Vector3 {
 public:
-	Vector3(){}
+	Vector3() {}
 
 	Vector3(float x, float y, float z) : x(x), y(y), z(z) {};
 	float x;
 	float y;
 	float z;
 };
+
+//Loads Texture
+GLuint LoadTexture(const char *filePath) {
+	int w, h, comp;
+	unsigned char* image = stbi_load(filePath, &w, &h, &comp, STBI_rgb_alpha);
+	if (image == NULL) {
+		cerr << "Unable to load image: " << filePath << '\n';
+		exit(7);
+	}
+	GLuint result;
+	glGenTextures(1, &result);
+	glBindTexture(GL_TEXTURE_2D, result);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, image);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	stbi_image_free(image);
+	return result;
+}
 
 //Sheet Class
 class SheetSprite {
@@ -92,7 +105,7 @@ void SheetSprite::Draw(ShaderProgram *program) {
 	glEnableVertexAttribArray(program->positionAttribute);
 	glVertexAttribPointer(program->texCoordAttribute, 2, GL_FLOAT, false, 0, texCoords);
 	glEnableVertexAttribArray(program->texCoordAttribute);
-	glDrawArrays(GL_TRIANGLES, 0, 6 );
+	glDrawArrays(GL_TRIANGLES, 0, 6);
 	glDisableVertexAttribArray(program->positionAttribute);
 	glDisableVertexAttribArray(program->texCoordAttribute);
 
@@ -129,21 +142,19 @@ void DrawText(ShaderProgram *program, int fontTexture, std::string text, float s
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-	// draw this data (use the .data() method of std::vector to get pointer to data)
 	glVertexAttribPointer(program->positionAttribute, 2, GL_FLOAT, false, 0, vertexData.data());
 	glEnableVertexAttribArray(program->positionAttribute);
 	glVertexAttribPointer(program->texCoordAttribute, 2, GL_FLOAT, false, 0, texCoordData.data());
 	glEnableVertexAttribArray(program->texCoordAttribute);
-	glDrawArrays(GL_TRIANGLES, 0, 6*text.size());
+	glDrawArrays(GL_TRIANGLES, 0, 6 * text.size());
 	glDisableVertexAttribArray(program->positionAttribute);
 	glDisableVertexAttribArray(program->texCoordAttribute);
 }
 
-
 //Entity Class
 class Entity {
 public:
-	Entity(){}
+	Entity() {}
 
 	void Draw(ShaderProgram *program) {
 		sprite.Draw(program);
@@ -152,291 +163,488 @@ public:
 	Vector3 position;
 	float velocity;
 	Vector3 size;
-	Matrix viewMatrix;
+	Matrix model;
 	float rotation;
 	SheetSprite sprite;
 	float health;
 	float somethingElse;
 };
 
-//States
-class GameState {
-public:
-	GameState(){}
-
-	Entity player;
-	std::vector<Entity> enemies;
-	std::vector<Entity> bullets;
-	Entity bullet;
-	Entity enemy;
-	int score;
-};
-
-enum GameMode{ STATE_MAIN_MENU, STATE_GAME};
-GameMode mode = STATE_MAIN_MENU;
-GameState state;
-
-//Player Globals
-Matrix playerviewMatrix;
-//Matrix enemies[12];
-SheetSprite bulletSprite;
-SheetSprite enemySprite;
-
-GLuint spriteSheetTexture;
-GLuint textTexture;
-
-Mix_Chunk* collideSound;
-
-//Render Function
-void Render(ShaderProgram* program) {
-
-	Matrix titleModelViewMatrix;
-	Matrix commandModelViewMatrix;
-
-	//Render Player
-	program->SetModelviewMatrix(playerviewMatrix);
-	state.player.Draw(program);
-	
-	//Render Enemy
-	program->SetModelviewMatrix(state.enemy.viewMatrix);
-	state.enemy.Draw(program);
-
-	//Render Bullet
-	program->SetModelviewMatrix(state.bullet.viewMatrix);
-	state.bullet.Draw(program);
-
-	for (size_t i = 0; i < state.bullets.size(); i++) {
-		OutputDebugString("DrawBullet!!");
-		program->SetModelviewMatrix(state.bullets[i].viewMatrix);
-		state.bullets[i].Draw(program);
-	}
-	switch (mode) {
-
-	case STATE_MAIN_MENU:
-		titleModelViewMatrix.Translate(-1.25, 1, 0);
-		program->SetModelviewMatrix(titleModelViewMatrix);
-		DrawText(program, textTexture, "Space Invaders", .25f, -0.10f);
-
-		commandModelViewMatrix.Translate(-2, -0.5, 0);
-		program->SetModelviewMatrix(commandModelViewMatrix);
-		DrawText(program, textTexture, "Press Space to Start Game", .25f, -0.10f);
-
-		break;
-
-	case STATE_GAME:
-		break;
-	}
-
+void DrawTrianglesWithTexture(const Matrix& ModelviewMatrix, GLsizei numTriangles, const float* vertices, const float* texCoords, GLuint textureID) {
+	program->SetModelviewMatrix(ModelviewMatrix);
+	glVertexAttribPointer(program->positionAttribute, 2, GL_FLOAT, false, 0, vertices);
+	glVertexAttribPointer(program->texCoordAttribute, 2, GL_FLOAT, false, 0, texCoords);
+	glEnableVertexAttribArray(program->positionAttribute);
+	glEnableVertexAttribArray(program->texCoordAttribute);
+	glBindTexture(GL_TEXTURE_2D, textureID);
+	glDrawArrays(GL_TRIANGLES, 0, 3 * numTriangles);
+	glDisableVertexAttribArray(program->positionAttribute);
+	glDisableVertexAttribArray(program->texCoordAttribute);
 }
 
-
-//Static MainMenu
-void UpdateMainMenu(float elapsed) {}
-
-//Updatess game states
-void UpdateGameLevel(float elapsed) {
-
-	for (size_t i = 0; i < state.bullets.size(); i++) {
-		OutputDebugString("UpdateBullet!!");
-		state.bullets[i].position.y += 0.8f * elapsed;
-		state.bullets[i].viewMatrix.SetPosition(state.bullet.position.x, state.bullet.position.y, 0);
-	}
-
-	state.bullet.position.y += 1.5f * elapsed;
-	state.bullet.viewMatrix.SetPosition(state.bullet.position.x, state.bullet.position.y, 0);
-
-	if (state.enemy.position.x + state.enemy.velocity * elapsed > 3.3 || 
-		state.enemy.position.x + state.enemy.velocity * elapsed < -3.3) {
-		Mix_PlayChannel(-1, collideSound, 0);
-		state.enemy.velocity *= -1;
-	}
-
-	state.enemy.position.x += state.enemy.velocity * elapsed;
-	state.enemy.viewMatrix.SetPosition(state.enemy.position.x, state.enemy.position.y, 0);
-
-}
-
-void Update(float elapsed) {
-	switch (mode) {
-	case STATE_MAIN_MENU:
-		UpdateMainMenu(elapsed);
-		break;
-	case STATE_GAME:
-		UpdateGameLevel(elapsed);
-		break;
+Uint32 MillisecondsElapsed() {
+	static Uint32 lastFrameTick = SDL_GetTicks();
+	Uint32 thisFrameTick, delta;
+	while (true) {
+		// Calculate the number of milliseconds that have elapsed since the last call to this function.
+		thisFrameTick = SDL_GetTicks();
+		delta = thisFrameTick - lastFrameTick;
+		// At 60 FPS, there should be 16.67 milliseconds between frames.
+		// If it has been shorter than 16 milliseconds, sleep.
+		if (delta < 16) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(16 - delta));
+		}
+		else {
+			lastFrameTick = thisFrameTick;
+			return delta;
+		}
 	}
 }
 
+//Double checks if Level has all the platforms
 
-void ProcessMainMenuInput(SDL_Event event) {
-	if (event.key.keysym.scancode == SDL_SCANCODE_SPACE) {
-		mode = STATE_GAME;
-		playerviewMatrix.SetPosition(0, -1.6f, 0);
-
-		Entity enemy;
-		enemy.sprite = enemySprite;
-		enemy.velocity = 0.8f;
-		enemy.position = Vector3(0, 0, 0);
-
-		state.enemy = enemy;
+bool checkLevel(TileFile& tileFile){
+	auto platform = tileFile.GetLayers().find("Platform");
+	if (platform == tileFile.GetLayers().end()) {
+		return false;
 	}
+	auto start = tileFile.GetEntities().find("Start");
+	if (start == tileFile.GetEntities().end()) {
+		return false;
+	}
+	auto start2 = tileFile.GetEntities().find("Start2");
+	if (start2 == tileFile.GetEntities().end()) {
+		return false;
+	}
+
+	return true;
 }
 
-void ProcessGameLevelInput(SDL_Event event, float elapsed, bool summonBullet) {
-
-	const Uint8 *keys = SDL_GetKeyboardState(NULL);
-
-	if (summonBullet) {
-		OutputDebugString("Summon Bullet???");
-
-		Entity bullet;
-		bullet.sprite = bulletSprite;
-		bullet.position = Vector3(state.player.position.x, -1.5f, 0);
-		//bullet.viewMatrix.Identity();
-
-		//state.bullets.push_back(bullet);
-		state.bullet = bullet;
-	}
-
-	float velocity = state.player.velocity;
-
-	if (keys[SDL_SCANCODE_RIGHT] && state.player.position.x + velocity * elapsed < 3.2f) {
-		OutputDebugString("Move Left???");
-
-		state.player.position.x += velocity * elapsed;
-		playerviewMatrix.Translate(velocity * elapsed, 0, 0);
-	}
-	else if (keys[SDL_SCANCODE_LEFT] && state.player.position.x + velocity * elapsed > -3.2f) {
-		OutputDebugString("Move Right???");
-		velocity *= -1;
-		state.player.position.x +=  velocity * elapsed;
-		playerviewMatrix.Translate(velocity * elapsed, 0, 0);
-	}
-
-
-}
-
-void ProcessInput(SDL_Event event, float elapsed, bool summonBullet) {
-	switch (mode) {
-	case STATE_MAIN_MENU:
-		OutputDebugString("Getting out of main menu");
-		ProcessMainMenuInput(event);
-		break;
-
-	case STATE_GAME:
-		ProcessGameLevelInput(event, elapsed, summonBullet);
-		break;
-	}
-}
+GameState state = GAME_LEVEL;
 
 
 int main(int argc, char *argv[])
 {
 	SDL_Init(SDL_INIT_VIDEO);
-	displayWindow = SDL_CreateWindow("Simon's SpaceInvaders", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 960, 540, SDL_WINDOW_OPENGL);
+	SDL_Init(SDL_INIT_AUDIO);
+
+	displayWindow = SDL_CreateWindow("Ashley & Simon's Final", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WINDOW_WIDTH, WINDOW_HEIGHT, SDL_WINDOW_OPENGL);
 	SDL_GLContext context = SDL_GL_CreateContext(displayWindow);
 	SDL_GL_MakeCurrent(displayWindow, context);
 #ifdef _WINDOWS
 	glewInit();
 #endif
-
-	glViewport(0, 0, 960, 540);
-	ShaderProgram program(RESOURCE_FOLDER"vertex_textured.glsl", RESOURCE_FOLDER"fragment_textured.glsl");
-
-	spriteSheetTexture = LoadTexture(RESOURCE_FOLDER"sheet.png");
-	textTexture = LoadTexture(RESOURCE_FOLDER"text.png");
-
+	glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
 	Matrix projectionMatrix;
-	projectionMatrix.SetOrthoProjection(-3.55f, 3.55f, -2.0f, 2.0f, -1.0f, 1.0f);
-
-	//Set up Music
+	projectionMatrix.SetOrthoProjection(-ORTHO_X_BOUND, ORTHO_X_BOUND, -ORTHO_Y_BOUND, ORTHO_Y_BOUND, -1.0f, 1.0f);
+	program = new ShaderProgram(RESOURCE_FOLDER"vertex_textured.glsl", RESOURCE_FOLDER"fragment_textured.glsl");
+	program->SetProjectionMatrix(projectionMatrix);
+	glClearColor(0.0f, 0.3f, 0.6f, 1.0f);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	float fullscreenVertices[12];
+	float fullscreenTextureCoordinates[12];
+	Rectangle::SetBox(fullscreenVertices, ORTHO_Y_BOUND, ORTHO_X_BOUND, -ORTHO_Y_BOUND, -ORTHO_X_BOUND);
+	Rectangle::SetBox(fullscreenTextureCoordinates, 0.0f, 1.0f, 1.0f, 0.0f);
+	
+	//Music Setup
 	Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 4096);
 
-	Mix_Music *themeMusic;
-	themeMusic = Mix_LoadMUS("track.mp3");
-	Mix_PlayMusic(themeMusic, -1);
 
-	//init laser sound
-	Mix_Chunk* shootSound;
-	shootSound= Mix_LoadWAV("beam.wav");
+	Mix_Music *music;
+	music = Mix_LoadMUS(RESOURCE_FOLDER"music.wav");
 
-	//init beep sound
-	collideSound = Mix_LoadWAV("beep.wav");
+	Mix_Chunk *walk_music;
+	walk_music = Mix_LoadWAV(RESOURCE_FOLDER"walk.wav");
 
-	//======================Creating Entities
-	
-	//initialize player
-	spriteSheetTexture = LoadTexture(RESOURCE_FOLDER"sheet.png");
-	SheetSprite shipSprite(spriteSheetTexture, 224.0f / 1024.0f, 832.0f / 1024.0f, 99.0f / 1024.0f, 75.0f / 1024.0f, 0.5f);
+	Mix_Chunk *swish;
+	swish = Mix_LoadWAV(RESOURCE_FOLDER"swish.wav");
 
-	Entity player;
-	player.sprite = shipSprite;
-	player.position = Vector3(0, 0, 0);
-	player.velocity = 20.5f;
+	//when player gets hit
+	Mix_Chunk *thump;
+	thump = Mix_LoadWAV(RESOURCE_FOLDER"thump.wav");
 
-	state.player = player;
-	
-	//Bullet
-	bulletSprite = SheetSprite(spriteSheetTexture, 834.0f / 1024.0f, 299.0f / 1024.0f, 14.0f / 1024.0f, 31.0f / 1024.0f, 0.5f);
-	bool summonBullet = false;
+	Mix_PlayMusic(music, -1);
+	Mix_VolumeMusic(MIX_MAX_VOLUME / 10);
+	Mix_VolumeChunk(walk_music, MIX_MAX_VOLUME / 10);
 
-	//Enemy
-	enemySprite = SheetSprite(spriteSheetTexture, 224.0f / 1024.0f, 832.0f / 1024.0f, 99.0f / 1024.0f, 75.0f / 1024.0f, 0.25f);
+	// Load textures
+	GLuint Ticeland = LoadTexture(RESOURCE_FOLDER"spritesheet.png");
+	GLuint Tplayer = LoadTexture(RESOURCE_FOLDER"Player.png");
+	GLuint TRageplayer = LoadTexture(RESOURCE_FOLDER"RagePlayer.png");
+	GLuint THurtplayer = LoadTexture(RESOURCE_FOLDER"HurtPlayer.png");
+	GLuint Ttext = LoadTexture(RESOURCE_FOLDER"text.png");
+	GLuint Tmenu = LoadTexture(RESOURCE_FOLDER"MainMenu.png");
+	GLuint TmapSelect= LoadTexture(RESOURCE_FOLDER"MapSelect.png");
 
-	//Elapsed Times
-	float accumulator = 0.0f;
-	float prevTicks = 0.0f;
+
+	bool done = false;
+
+	Matrix titleModelViewMatrix;
+	Matrix MapSelectMatrix;
+	Matrix EndLevelMatrix;
 
 	SDL_Event event;
-	bool done = false;
+	Matrix view;
+
+	string Winner;
+	float wallVertices1[] = { -0.5, -0.5, 0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, 0.5 };
+	float wallTexCoords1[] = { 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0 };
+
 	while (!done) {
-		
-		float ticks = (float)SDL_GetTicks() / 1000.0f;
-		float elapsed = ticks - prevTicks;
-		prevTicks = ticks;
-		elapsed += accumulator;
-		if (elapsed < FIXED_TIMESTEP) {
-			accumulator = elapsed;
-			continue;
-		}
-		summonBullet = false;
 
-		while (SDL_PollEvent(&event)) {
-			if (event.type == SDL_QUIT || event.type == SDL_WINDOWEVENT_CLOSE) {
-				done = true;
-			}
-			else if (event.type == SDL_KEYDOWN) {
+		switch (state) {
 
-				if (event.key.keysym.scancode == SDL_SCANCODE_SPACE) {
-					Mix_PlayChannel(-1, shootSound, 0);
-					summonBullet = true;
+		case MAIN_MENU: {
+			glClear(GL_COLOR_BUFFER_BIT);
+			glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
+			titleModelViewMatrix.Identity();
+
+			glBindTexture(GL_TEXTURE_2D, Tmenu);
+			titleModelViewMatrix.Translate(0.0f, 0.0f, 0.0f);
+			titleModelViewMatrix.Scale(34.0f, 20.0f, 1.0);
+			program->SetModelviewMatrix(titleModelViewMatrix);
+
+			glVertexAttribPointer(program->positionAttribute, 2, GL_FLOAT, false, 0, wallVertices1);
+			glEnableVertexAttribArray(program->positionAttribute);
+
+			glVertexAttribPointer(program->texCoordAttribute, 2, GL_FLOAT, false, 0, wallTexCoords1);
+			glEnableVertexAttribArray(program->texCoordAttribute);
+
+			glDrawArrays(GL_TRIANGLES, 0, 6);
+
+			glDisableVertexAttribArray(program->positionAttribute);
+			glDisableVertexAttribArray(program->texCoordAttribute);
+
+			while (SDL_PollEvent(&event)) {
+				switch (event.type) {
+				case SDL_QUIT:
+				case SDL_WINDOWEVENT_CLOSE:
+					done = true;
+					break;
+
+				case SDL_KEYDOWN:
+					switch (event.key.keysym.scancode) {
+					case SDL_SCANCODE_SPACE:
+						state = MAP_SELECT;
+						break;
+
+					case SDL_SCANCODE_ESCAPE:
+						done = true;
+						break;
+					}
+
+					break;
+
 				}
 			}
+			break;
 		}
-		glClear(GL_COLOR_BUFFER_BIT);
-		glUseProgram(program.programID);
-		program.SetProjectionMatrix(projectionMatrix);
+		case MAP_SELECT: {
+			glClear(GL_COLOR_BUFFER_BIT);
+			glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
-		while (elapsed >= FIXED_TIMESTEP) {
-			Update(FIXED_TIMESTEP);
-			elapsed -= FIXED_TIMESTEP;
+			MapSelectMatrix.Identity();
+
+			glBindTexture(GL_TEXTURE_2D, TmapSelect);
+			MapSelectMatrix.Translate(0.0f, -0.5f, 0.0f);
+			MapSelectMatrix.Scale(20.0f, 20.0f, 1.0);
+			program->SetModelviewMatrix(MapSelectMatrix);
+
+			glVertexAttribPointer(program->positionAttribute, 2, GL_FLOAT, false, 0, wallVertices1);
+			glEnableVertexAttribArray(program->positionAttribute);
+
+			glVertexAttribPointer(program->texCoordAttribute, 2, GL_FLOAT, false, 0, wallTexCoords1);
+			glEnableVertexAttribArray(program->texCoordAttribute);
+
+			glDrawArrays(GL_TRIANGLES, 0, 6);
+
+			glDisableVertexAttribArray(program->positionAttribute);
+			glDisableVertexAttribArray(program->texCoordAttribute);
+
+			while (SDL_PollEvent(&event)) {
+				switch (event.type) {
+				case SDL_QUIT:
+				case SDL_WINDOWEVENT_CLOSE:
+					done = true;
+					break;
+
+				case SDL_KEYDOWN:
+					switch (event.key.keysym.scancode) {
+					case SDL_SCANCODE_1:
+						state = GAME_LEVEL;
+						TILE_FILE = "1.txt";
+						break;
+
+					case SDL_SCANCODE_2:
+						state = GAME_LEVEL;
+						TILE_FILE = "2.txt";
+						break;
+
+					case SDL_SCANCODE_3:
+						state = GAME_LEVEL;
+						TILE_FILE = "3.txt";
+						break;
+
+					case SDL_SCANCODE_ESCAPE:
+						done = true;
+						break;
+					}
+
+					break;
+
+				}
+			}
+			break;
 		}
+		case GAME_LEVEL:{
+			// Level Data
+			TileFile tileFile;
+			try {
+				tileFile = TileFile(std::ifstream(TILE_FILE));
+			}
+			catch (const TileFile::ParseError& e) {
+				cerr << "Unable to parse level data!\n" << e.message << '\n' << e.line << '\n';
+				return 1;
+			}
 
-		accumulator = elapsed;
-		ProcessInput(event, elapsed, summonBullet);
-		//Update(elapsed);
-		Render(&program);
+			if (!checkLevel(tileFile)) {
+				return -1;
+			}
 
+			auto platform = tileFile.GetLayers().find("Platform");
+			auto start = tileFile.GetEntities().find("Start");
+			auto start2 = tileFile.GetEntities().find("Start2");
+
+			vector<Tile> tiles;
+			for (unsigned int i = 0; i < tileFile.GetMapHeight(); ++i) {
+				for (unsigned int j = 0; j < tileFile.GetMapWidth(); ++j) {
+					if (platform->second[i][j] >= 0) {
+						tiles.emplace_back(platform->second[i][j], tileFile.RowFromTopToRowFromBottom(i), j);
+					}
+				}
+			}
+
+			float limitX = tileFile.GetMapWidth() * 0.5f - 2 * ORTHO_X_BOUND,
+				limitYBottom = tileFile.GetMapHeight() * -0.5f - ORTHO_Y_BOUND;
+
+			glClear(GL_COLOR_BUFFER_BIT);
+			glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
+			Matrix view;
+			Player player(tileFile.RowFromTopToRowFromBottom(start->second.begin()->row), start->second.begin()->column + 1, true, walk_music);
+
+			float oldPlayerVelocityY = 0.0f;
+			float snowballVelocityY = 0.0f;
+
+			Player player2(tileFile.RowFromTopToRowFromBottom(start2->second.begin()->row), start2->second.begin()->column + 1, false, walk_music);
+			float oldPlayer2VelocityY = 0.0f;
+
+			bool gameDone = false;
+			// Main game loop
+			while (!gameDone) {
+				Uint32 mse = MillisecondsElapsed();
+				while (SDL_PollEvent(&event)) {
+					switch (event.type) {
+					case SDL_QUIT:
+					case SDL_WINDOWEVENT_CLOSE:
+						done = true;
+						break;
+					case SDL_KEYDOWN:
+						switch (event.key.keysym.scancode) {
+						case SDL_SCANCODE_SPACE: {
+								Mix_PlayChannel(-1, swish, 0);
+								player2.activateRage();
+								break;
+						}
+						case SDL_SCANCODE_J: {
+							Mix_PlayChannel(-1, swish, 0);
+							player.activateRage();
+							break;
+						}
+						case SDL_SCANCODE_ESCAPE:
+							state = MAIN_MENU;
+							gameDone = true;
+							break;
+						}
+						break;
+					}
+				}
+				if (player.GetCenterY() < limitYBottom) {
+					break;
+				}
+				player.ProcessInput(mse);
+				player2.ProcessInput(mse);
+				view.SetPosition(-min(max(player.GetCenterX(), 0.0f), limitX), -player.GetCenterY(), 0.0f);
+
+				//jump-collision with players
+
+				if (abs(player.GetCenterX() - player2.GetCenterX()) < 0.5 && abs(player.GetCenterY() - player2.GetCenterY()) < 0.5 && abs(player.GetCenterY() - player2.GetCenterY()) > 0.1){
+					if (player.GetCenterY() > player2.GetCenterY() && !player.isHurt()) {
+						player.bouncePlayer(mse);
+						bool continueGame = player2.decreaseHealth();
+						if (!continueGame) {
+							state = GAME_OVER;
+							Winner = "Player 1";
+							gameDone = true;
+						}
+					}
+					else if (player.GetCenterY() < player2.GetCenterY() && !player2.isHurt()) {
+						player2.bouncePlayer(mse);
+						bool continueGame = player.decreaseHealth();
+						if (!continueGame) {
+							state = GAME_OVER;
+							Winner = "Player 2";
+							gameDone = true;
+						}
+					}
+				}
+
+				// rage mode
+				if (abs(player.GetCenterX() - player2.GetCenterX()) < 0.5 && (player.isRage() || player2.isRage()) && abs(player.GetCenterY() - player2.GetCenterY()) < 0.1){
+					if (player.isRage() && !player2.isHurt()) {
+						bool continueGame = player2.decreaseHealth();
+						if (!continueGame) {
+							state = GAME_OVER;
+							Winner = "Player 1";
+							gameDone = true;
+						}
+					}
+					else if (player2.isRage() && !player.isHurt()) {
+						bool continueGame = player.decreaseHealth();
+						if (!continueGame) {
+							state = GAME_OVER;
+							Winner = "Player 2";
+							gameDone = true;
+						}
+					}
+				}
+
+				glClear(GL_COLOR_BUFFER_BIT);
+
+				// Draw tiles
+				for (const auto& tile : tiles) {
+					if (tile.GetLeftBoxBound() < player.GetCenterX() && player.GetCenterX() <= tile.GetRightBoxBound()) {
+						// collision with player 2's bottom.
+						if (tile.GetBottomBoxBound() < player.GetBottomBoxBound()) {
+							register float topBound = tile.GetTopBoxBound();
+							if (player.GetBottomBoxBound() <= topBound) {
+								player.StayAbove(topBound);
+							}
+						}
+						else if (tile.GetBottomBoxBound() < player.GetTopBoxBound() && player.GetTopBoxBound() <= tile.GetTopBoxBound()) {
+							player.StayBelow(tile.GetBottomBoxBound());
+						}
+					}
+					if (tile.GetBottomBoxBound() < player.GetCenterY() && player.GetCenterY() <= tile.GetTopBoxBound()) {
+						// Right
+						if (tile.GetLeftBoxBound() < player.GetRightBoxBound() && player.GetRightBoxBound() <= tile.GetRightBoxBound()) {
+							player.StayToLeftOf(tile.GetLeftBoxBound());
+						}
+						// Left
+						else if (tile.GetLeftBoxBound() < player.GetLeftBoxBound() && player.GetLeftBoxBound() <= tile.GetRightBoxBound()) {
+							player.StayToRightOf(tile.GetRightBoxBound());
+						}
+					}
+
+					if (tile.GetLeftBoxBound() < player2.GetCenterX() && player2.GetCenterX() <= tile.GetRightBoxBound()) {
+						// collision with player 2's bottom.
+						if (tile.GetBottomBoxBound() < player2.GetBottomBoxBound()) {
+							register float topBound = tile.GetTopBoxBound();
+							if (player2.GetBottomBoxBound() <= topBound) {
+								player2.StayAbove(topBound);
+							}
+						}
+						else if (tile.GetBottomBoxBound() < player2.GetTopBoxBound() && player2.GetTopBoxBound() <= tile.GetTopBoxBound()) {
+							player2.StayBelow(tile.GetBottomBoxBound());
+						}
+					}
+					if (tile.GetBottomBoxBound() < player2.GetCenterY() && player2.GetCenterY() <= tile.GetTopBoxBound()) {
+						// Right
+						if (tile.GetLeftBoxBound() < player2.GetRightBoxBound() && player2.GetRightBoxBound() <= tile.GetRightBoxBound()) {
+							player2.StayToLeftOf(tile.GetLeftBoxBound());
+						}
+						// Left
+						else if (tile.GetLeftBoxBound() < player2.GetLeftBoxBound() && player2.GetLeftBoxBound() <= tile.GetRightBoxBound()) {
+							player2.StayToRightOf(tile.GetRightBoxBound());
+						}
+					}
+
+					DrawTrianglesWithTexture(tile.model * view, 2, tile.VERTICES, tile.texture, Ticeland);
+				}
+
+				// player based on state
+				oldPlayerVelocityY = player.GetVelocityY();
+				if (player.isHurt()) {
+					DrawTrianglesWithTexture(player.model * view, 2, player.GetVertices(), player.GetTexture(), THurtplayer);
+				}
+				else if (player.isRage()) {
+					DrawTrianglesWithTexture(player.model * view, 2, player.GetVertices(), player.GetTexture(), TRageplayer);
+				}
+				else
+					DrawTrianglesWithTexture(player.model * view, 2, player.GetVertices(), player.GetTexture(), Tplayer);
+
+				oldPlayer2VelocityY = player2.GetVelocityY();
+				if (player2.isHurt()) {
+					DrawTrianglesWithTexture(player2.model * view, 2, player2.GetVertices(), player2.GetTexture(), THurtplayer);
+				}
+				else if (player2.isRage()) {
+					DrawTrianglesWithTexture(player2.model * view, 2, player2.GetVertices(), player2.GetTexture(), TRageplayer);
+				}
+				else
+					DrawTrianglesWithTexture(player2.model * view, 2, player2.GetVertices(), player2.GetTexture(), Tplayer);
+
+				SDL_GL_SwapWindow(displayWindow);
+			}
+			break;
+		}
+		case GAME_OVER: {
+			glClear(GL_COLOR_BUFFER_BIT);
+			glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
+			EndLevelMatrix.SetPosition(-7.25, 1, 0);
+			program->SetModelviewMatrix(EndLevelMatrix);
+			DrawText(program, Ttext, Winner + " has Won the Game. Press Space", 0.6f, -0.10f);
+
+			while (SDL_PollEvent(&event)) {
+				switch (event.type) {
+				case SDL_QUIT:
+				case SDL_WINDOWEVENT_CLOSE:
+					done = true;
+					break;
+
+				case SDL_KEYDOWN:
+					switch (event.key.keysym.scancode) {
+					case SDL_SCANCODE_SPACE:
+						glClear(GL_COLOR_BUFFER_BIT);
+
+						state = GAME_LEVEL;
+						break;
+
+					case SDL_SCANCODE_ESCAPE:
+						done = true;
+						break;
+					}
+
+					break;
+
+				}
+			}
+			break;
+			}
+		}
+		
 
 		SDL_GL_SwapWindow(displayWindow);
+
 	}
-
-	//Clean up music
-	Mix_FreeMusic(themeMusic);
-	Mix_FreeChunk(shootSound);
-	Mix_FreeChunk(collideSound);
-
+	
+	delete program;
+	
+	Mix_FreeMusic(music);
+	Mix_FreeChunk(walk_music);
+	Mix_FreeChunk(thump); 
 	SDL_Quit();
 	return 0;
 }
-
